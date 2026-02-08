@@ -137,21 +137,37 @@ static void handle_sdl_events(struct lys_context *ctx) {
 
 static void sdl_loop(struct lys_context *ctx) {
   struct futhark_u32_2d *out_arr;
+  float accumulator = 0.0;
+  float frame_time = 1.0 / ctx->max_fps;
+  int64_t last_render_time = lys_wall_time();
 
   while (ctx->running) {
     int64_t now = lys_wall_time();
     float delta = ((float)(now - ctx->last_time))/1000000.0;
-    ctx->fps = (ctx->fps*0.9 + (1/delta)*0.1);
     ctx->last_time = now;
-    struct futhark_opaque_state *new_state, *old_state = ctx->state;
-    FUT_CHECK(ctx->fut, futhark_entry_step(ctx->fut, &new_state, delta, old_state));
-    ctx->state = new_state;
 
+    accumulator += delta;
+
+    // Limit accumulator to prevent spiral of death
+    if (accumulator > frame_time * 5) {
+      accumulator = frame_time * 5;
+    }
+
+    // Process frames while we have accumulated enough time
+    while (accumulator >= frame_time && ctx->running) {
+      struct futhark_opaque_state *new_state, *old_state = ctx->state;
+      FUT_CHECK(ctx->fut, futhark_entry_step(ctx->fut, &new_state, frame_time, old_state));
+      ctx->state = new_state;
+      FUT_CHECK(ctx->fut, futhark_free_opaque_state(ctx->fut, old_state));
+
+      accumulator -= frame_time;
+    }
+
+    // Always render once per iteration
     FUT_CHECK(ctx->fut, futhark_entry_render(ctx->fut, &out_arr, ctx->state));
     FUT_CHECK(ctx->fut, futhark_values_u32_2d(ctx->fut, out_arr, ctx->data));
     FUT_CHECK(ctx->fut, futhark_context_sync(ctx->fut));
     FUT_CHECK(ctx->fut, futhark_free_u32_2d(ctx->fut, out_arr));
-    FUT_CHECK(ctx->fut, futhark_free_opaque_state(ctx->fut, old_state));
 
     SDL_ASSERT(SDL_BlitSurface(ctx->surface, NULL, ctx->wnd_surface, NULL)==0);
 
@@ -159,12 +175,21 @@ static void sdl_loop(struct lys_context *ctx) {
 
     SDL_ASSERT(SDL_UpdateWindowSurface(ctx->wnd) == 0);
 
-    int delay =  1000.0/ctx->max_fps - delta*1000.0;
-    if (delay > 0) {
-      SDL_Delay(delay);
-    }
+    // Calculate actual render FPS
+    int64_t render_now = lys_wall_time();
+    float render_delta = ((float)(render_now - last_render_time))/1000000.0;
+    last_render_time = render_now;
+    ctx->fps = (ctx->fps*0.9 + (1.0/render_delta)*0.1);
 
     handle_sdl_events(ctx);
+
+    // Sleep for remaining time if we're ahead
+    int64_t after_work = lys_wall_time();
+    float work_time = ((float)(after_work - now))/1000000.0;
+    float sleep_time = frame_time - accumulator - work_time;
+    if (sleep_time > 0.001) {
+      SDL_Delay((int)(sleep_time * 1000.0));
+    }
   }
 }
 

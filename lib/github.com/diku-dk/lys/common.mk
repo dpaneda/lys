@@ -29,9 +29,11 @@ $(PROGNAME)_printf.h: $(PROGNAME)_wrapper.c
 	python3 $(SELF_DIR)/gen_printf.py $(FRONTEND_DIR) $@ $<
 
 font_data.h: $(SELF_DIR)/Inconsolata-Regular.ttf
-	echo 'unsigned char font_data[] = {' > $@
-	xxd -i - < $< >> $@
-	echo '};' >> $@
+	python3 -c 'import sys; \
+		data = open(sys.argv[1], "rb").read(); \
+		print("unsigned char font_data[] = {"); \
+		print(",".join(f"0x{b:02x}" for b in data)); \
+		print("};")' $< > $@
 
 # We do not want warnings and such for the generated code.
 $(PROGNAME)_wrapper.o: $(PROGNAME)_wrapper.c
